@@ -1,160 +1,149 @@
-﻿# Chatbot - Python API
+# Bot de frotas para WhatsApp — FastAPI + SQL Server
 
-![Python](https://img.shields.io/badge/Python-3.9%2B-blue?style=for-the-badge&logo=python)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.111.0-green?style=for-the-badge&logo=fastapi)
-![SQL Server](https://img.shields.io/badge/MS_SQL_Server-ODBC-red?style=for-the-badge&logo=microsoftsqlserver)
+[![CI](https://github.com/DiogoWallace/bot-python/actions/workflows/ci.yml/badge.svg)](https://github.com/DiogoWallace/bot-python/actions/workflows/ci.yml)
 
-Este projeto é a implementação em Python de um chatbot para WhatsApp, projetado para atuar como um assistente de gestão de frotas. O bot processa comandos de usuários, consulta um banco de dados Microsoft SQL Server para obter dados de telemetria e retorna relatórios e informações formatadas.
+Backend de um assistente de gestão de frotas no WhatsApp. Recebe as mensagens
+pelo webhook da [Evolution API](https://github.com/EvolutionAPI/evolution-api),
+autoriza o número, interpreta o comando do menu, consulta o estado da conversa
+no SQL Server e decide a próxima ação.
 
-Esta implementação visa replicar e expandir a funcionalidade de um fluxo de trabalho originalmente construído em n8n.
+É a reescrita em Python de um fluxo que rodava no **n8n**: cada nó do fluxo
+virou uma função testável (`get_chat`, `Logic_bot`, `database_record_manager`).
 
-## Funcionalidades Principais
+> **Status: protótipo.** O ciclo de entrada está pronto e testado — webhook,
+> autorização, comandos, máquina de estados e persistência do estado da
+> conversa. A saída ainda não: o envio para o WhatsApp é **simulado** (registra
+> no log) e, das respostas, só a de acesso negado está escrita. Ver
+> [Próximos passos](#próximos-passos).
 
--   **Webhook de API:** Recebe e valida mensagens do WhatsApp através de um endpoint FastAPI.
--   **Autenticação de Usuário:** Verifica se o número do usuário tem permissão para interagir com o bot.
--   **Gerenciamento de Estado:** Mantém um histórico de interações no banco de dados para conversas contextuais.
--   **Processamento de Comandos:** Interpreta mensagens para acionar a geração de diversos relatórios:
-    -   Status da frota em tempo real.
-    -   Relatórios de desempenho.
-    -   Consumo de combustível e abastecimentos.
-    -   Violações de jornada de trabalho.
-    -   Localização de veículos específicos.
--   **Geração de Respostas:** Formata e envia respostas em texto, com planos para incluir menus, gráficos e localizações.
+## Como funciona
 
-## Arquitetura do Projeto
-
-O projeto segue uma estrutura modular para garantir a separação de responsabilidades e facilitar a manutenção.
-
-```
-/bot
-|
-|-- /app
-|   |-- /api
-|   |   |-- endpoints.py       # Definição das rotas da API (webhook)
-|   |
-|   |-- /core
-|   |   |-- config.py          # Carregamento de configurações e variáveis de ambiente
-|   |
-|   |-- /database
-|   |   |-- connection.py      # Gerenciamento da conexão com o banco
-|   |   |-- queries.py         # Centralização das queries SQL
-|   |
-|   |-- /schemas
-|   |   |-- webhook.py         # Modelos Pydantic para validação de dados
-|   |
-|   |-- /services
-|   |   |-- auth_service.py      # Lógica de autorização e processamento inicial
-|   |   |-- logic_service.py     # "Cérebro" do bot, decide o fluxo da conversa
-|   |   |-- response_service.py  # Formata as respostas para o usuário
-|   |   |-- external_api_service.py # (Simulado) Comunicação com APIs externas
-|   |
-|   |-- main.py                # Ponto de entrada da aplicação FastAPI
-|
-|-- .env                     # Arquivo com as variáveis de ambiente (local)
-|-- requirements.txt         # Lista de dependências do projeto
-|-- README.md                # Esta documentação
+```text
+WhatsApp ──▶ Evolution API ──webhook──▶ POST /message
+                                          │  1. confere o X-Webhook-Token
+                                          │  2. extrai número e comando
+                                          │  3. número está em AUTHORIZED_NUMBERS?
+                                          │  4. lê o estado da conversa (SQL Server)
+                                          │  5. máquina de estados → próxima ação
+                                          │  6. monta a resposta e envia (simulado)
+                                          └  7. grava o novo estado (SQL parametrizado)
 ```
 
-## Tecnologias Utilizadas
+### Máquina de estados
 
--   **Linguagem:** Python 3.9+
--   **Framework Web:** FastAPI
--   **Servidor ASGI:** Uvicorn
--   **Banco de Dados:** Microsoft SQL Server
--   **Conector DB:** pyodbc
--   **Validação de Dados:** Pydantic
--   **Cliente HTTP:** HTTPX
--   **Configuração:** python-dotenv
+| Situação | Próxima ação | O que grava |
+|---|---|---|
+| Número não autorizado, primeira vez | `access_denied` | cria a conversa com 1 bloqueio |
+| Número não autorizado, de novo | `access_denied` (aviso; bloqueio a partir da 4ª tentativa) | incrementa o contador de bloqueio |
+| Autorizado, primeiro contato | `send_presentation` | cria a conversa já apresentada |
+| Autorizado, ainda não apresentado | `send_presentation` | marca como apresentado |
+| Comando desconhecido | `invalid_command` | atualiza a última interação |
+| `Voltar` | `show_main_menu` | atualiza a última interação |
+| `💬 Falar com um Atendente` | `handle_support_request` | atualiza a última interação |
+| Demais comandos | `process_command` | atualiza a última interação |
 
-## Pré-requisitos
+### Comandos reconhecidos
 
-Antes de começar, garanta que você tenha os seguintes softwares instalados:
+| Mensagem (botão do menu) | Ação |
+|---|---|
+| 🚛 Veículos Online | `fleet_status` |
+| 🕒 Veículos Parados com Motor Ligado | `vehicles_idle_on` |
+| 📊 Desempenho da Frota | `performance` |
+| ⛽ Abastecimentos | `fuel_current` |
+| 📆 Resumo da Jornada | `journey_current` |
+| 💬 Falar com um Atendente | `support_request` |
+| `local <placa>` | `location_vehicle` (com a placa extraída) |
 
-1.  [Python 3.9 ou superior](https://www.python.org/downloads/)
-2.  `pip` (geralmente instalado com o Python)
-3.  Acesso a uma instância do Microsoft SQL Server.
-4.  **[Microsoft ODBC Driver for SQL Server](https://learn.microsoft.com/pt-br/sql/connect/odbc/download-odbc-driver-for-sql-server)** instalado na máquina onde a aplicação será executada.
+## Segurança
 
-## Configuração do Ambiente
+- **SQL sempre parametrizado.** Nenhum valor vindo do webhook entra no texto do
+  SQL; os testes mandam um `chat_id` hostil (`x'; DROP TABLE ...`) e conferem
+  que ele só aparece nos parâmetros.
+- **Números autorizados fora do código**, em `AUTHORIZED_NUMBERS` no `.env`,
+  com permissão e cluster de cada um.
+- **Webhook autenticado:** com `WEBHOOK_TOKEN` definido, chamadas sem o
+  cabeçalho `X-Webhook-Token` correto recebem 401 (comparação em tempo
+  constante).
+- **Bloqueio progressivo** de números sem permissão que insistem.
+- A gravação no banco registra no log só o tipo de operação, não o SQL
+  preenchido com os dados da conversa.
 
-Siga os passos abaixo para configurar o ambiente de desenvolvimento.
+## Stack
 
-1.  **Clone o repositório (ou copie os arquivos):**
-    ```bash
-    # Exemplo caso estivesse no Git
-    git clone https://seu-repositorio/bot.git
-    cd bot
-    ```
+Python 3.12 · FastAPI · Pydantic / pydantic-settings · pyodbc (SQL Server) ·
+pytest · GitHub Actions
 
-2.  **Crie e ative um ambiente virtual:**
-    ```bash
-    # Criar o ambiente
-    python -m venv venv
+```
+app/
+├── api/endpoints.py            # POST /message: o fluxo inteiro
+├── core/config.py              # configuração (.env), incluindo números e token
+├── database/
+│   ├── connection.py           # conexão pyodbc
+│   └── queries.py              # leitura e gravação do estado da conversa
+├── schemas/webhook.py          # payload da Evolution API (Pydantic)
+└── services/
+    ├── auth_service.py         # número, permissão e comando
+    ├── logic_service.py        # máquina de estados
+    ├── response_service.py     # texto das respostas
+    └── external_api_service.py # envio ao WhatsApp (simulado)
+tests/                          # 25 testes, com banco falso
+```
 
-    # Ativar no Windows
-    .\venv\Scripts\activate
+## Rodando localmente
 
-    # Ativar no macOS/Linux
-    source venv/bin/activate
-    ```
-
-3.  **Instale as dependências:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-4.  **Configure as variáveis de ambiente:**
-    -   Crie um arquivo chamado `.env` na raiz do projeto.
-    -   Copie o conteúdo abaixo para o arquivo e substitua pelos seus próprios valores.
-
-    ```ini
-    # .env - Exemplo de configuração
-    
-    # String de conexão com o banco de dados
-    DATABASE_URL="DRIVER={SQL Server};SERVER=ip_do_servidor;DATABASE=DB_MANAGER;UID=seu_usuario;PWD=sua_senha"
-    
-    # Configurações da Evolution API (Gateway do WhatsApp)
-    EVOLUTION_API_URL="[http://localhost:8080](http://localhost:8080)"
-    EVOLUTION_API_KEY="sua_api_key_aqui"
-    ```
-
-## Como Executar a Aplicação
-
-Com o ambiente virtual ativo, inicie o servidor FastAPI com Uvicorn.
+Pré-requisitos: Python 3.12, acesso a um SQL Server e o
+[ODBC Driver 18 for SQL Server](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server).
 
 ```bash
+git clone https://github.com/DiogoWallace/bot-python.git
+cd bot-python
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env        # preencha conexão, Evolution API, token e números
 uvicorn app.main:app --reload
 ```
--   O servidor estará disponível em `http://127.0.0.1:8000`.
--   A flag `--reload` reinicia o servidor automaticamente a cada alteração no código.
 
-## Como Testar
+A documentação interativa fica em `http://127.0.0.1:8000/docs`. Uma chamada de
+exemplo, com número fictício:
 
-A maneira mais fácil de testar o webhook é usando a documentação interativa gerada automaticamente pelo FastAPI.
-
-1.  Com o servidor rodando, acesse: `http://127.0.0.1:8000/docs`.
-2.  Encontre o endpoint `POST /message`, expanda-o e clique em "Try it out".
-3.  Cole um JSON de exemplo no campo "Request body" e clique em "Execute".
-
-**Exemplo de Payload para Teste:**
-```json
-{
-  "body": {
-    "data": {
-      "key": {
-        "remoteJid": "5535999999999@c.us",
-        "id": "MSG_ID_12345"
+```bash
+curl -X POST http://127.0.0.1:8000/message \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Token: $WEBHOOK_TOKEN" \
+  -d '{
+    "body": {
+      "data": {
+        "key": {"remoteJid": "5535999999999@c.us", "id": "MSG_1"},
+        "pushName": "Fulano",
+        "message": {"conversation": "🚛 Veículos Online"}
       },
-      "pushName": "Nome do Contato",
-      "message": {
-        "conversation": "🚛 Veículos Online"
-      }
+      "instance": "minha-instancia"
     },
-    "instance": "NomeDaInstancia"
-  },
-  "event": "messages.upsert",
-  "date_time": "2025-09-02T13:20:00Z"
-}
+    "event": "messages.upsert",
+    "date_time": "2026-10-08T12:00:00Z"
+  }'
 ```
 
-4.  Observe a saída no terminal onde o Uvicorn está rodando para ver os logs do processamento.
+O estado da conversa fica na tabela `t_pbi_interacoes_chatbot`, com as colunas
+`chat_id`, `nome`, `ja_se_apresentou`, `encerrado`, `aviso_enviado`,
+`ultima_interacao` e `count_bloqueio`.
+
+## Testes
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+25 testes cobrem a interpretação dos comandos, a autorização por número, todos
+os caminhos da máquina de estados, a parametrização do SQL e o endpoint de
+ponta a ponta (token, primeiro contato, bloqueio e banco indisponível). O banco
+é um dublê em memória que registra cada `execute`, então nada exige SQL Server.
+O CI roda a suíte a cada push.
+
+## Próximos passos
+
+- Envio real pela Evolution API (hoje `external_api_service` só registra).
+- Textos de apresentação, menu e comando inválido.
+- Consultas de telemetria por trás de cada comando (frota online, motor ligado
+  parado, desempenho, abastecimentos, jornada e localização por placa).
