@@ -1,12 +1,28 @@
-from fastapi import APIRouter, status, HTTPException
+import hmac
+from typing import Optional
+
+from fastapi import APIRouter, Header, status, HTTPException
+from app.core.config import settings
 from app.schemas.webhook import WebhookPayload
 from app.services import auth_service, logic_service, response_service, external_api_service
 from app.database import connection, queries
 
 router = APIRouter()
 
+
+def check_webhook_token(token: Optional[str]) -> None:
+    """Recusa a chamada quando WEBHOOK_TOKEN está definido e o cabeçalho não confere."""
+    expected = settings.WEBHOOK_TOKEN
+    if expected and not (token and hmac.compare_digest(token, expected)):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook token")
+
+
 @router.post("/message", status_code=status.HTTP_200_OK, tags=["Webhook"])
-def receive_message(payload: WebhookPayload):
+def receive_message(
+    payload: WebhookPayload,
+    x_webhook_token: Optional[str] = Header(default=None),
+):
+    check_webhook_token(x_webhook_token)
     processed_data = auth_service.process_webhook(payload)
     
     conn = connection.get_db_connection()
@@ -32,16 +48,16 @@ def receive_message(payload: WebhookPayload):
                 message=response['text_message']
             )
 
-        # 5. Gerar e EXECUTAR a query de atualização
-        update_query = queries.generate_chat_update_query(
-            decision['db_operation_type'], 
+        # 5. Gerar e EXECUTAR a query de atualização (valores como parâmetros)
+        update = queries.generate_chat_update_query(
+            decision['db_operation_type'],
             processed_data
         )
-        if update_query:
-            print(f"\n--- 💾 EXECUTANDO QUERY NO BANCO ---\n{update_query}")
-            cursor.execute(update_query)
+        if update:
+            sql, params = update
+            print(f"INFO:     Atualizando estado do chat ({decision['db_operation_type']}).")
+            cursor.execute(sql, *params)
             conn.commit()
-            print("------------------------------------")
 
     except Exception as e:
         # Erro -> rollback

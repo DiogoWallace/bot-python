@@ -1,15 +1,14 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any
+from app.core.config import settings
 from app.schemas.webhook import WebhookPayload
 
 # ===================================
-# Configurações e Mapeamento de Comandos (do n8n)
+# Mapeamento de Comandos (do n8n)
 # ===================================
+# Os números autorizados vêm de AUTHORIZED_NUMBERS (.env), não do código.
 
 CONFIG = {
-  "AUTHORIZED_NUMBERS": {
-    "5535999999999": {"permission": "gestor", "cluster": "49", "name": "diogo"},
-  },
   "COMMAND_MAPPING": {
     "🚛 Veículos Online": "fleet_status",
     "🕒 Veículos Parados com Motor Ligado": "vehicles_idle_on",
@@ -66,7 +65,7 @@ def process_webhook(payload: WebhookPayload) -> Dict[str, Any]:
     chat_id = payload.body.webhook_data.key.remote_jid
     phone_number = extract_phone_number(chat_id)
     
-    user_config = CONFIG["AUTHORIZED_NUMBERS"].get(phone_number, {})
+    user_config = settings.AUTHORIZED_NUMBERS.get(phone_number, {})
     permission = user_config.get("permission", "no_access")
     cluster = user_config.get("cluster", "")
     
@@ -87,7 +86,7 @@ def process_webhook(payload: WebhookPayload) -> Dict[str, Any]:
         "command_action": command_info["action"],
         "command_params": command_info["params"],
         "is_valid_command": command_info["type"] != "unknown",
-        "processed_at_utc": datetime.utcnow().isoformat()
+        "processed_at_utc": datetime.now(timezone.utc).isoformat()
     }
 
     return processed_data
